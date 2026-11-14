@@ -1,0 +1,84 @@
+name: bom-warehouse
+
+services:
+  # Two independent web processes sharing one SQLite file (WAL mode).
+  # Either can edit; both see only fully committed versions.
+  web-a:
+    build: .
+    image: bom-warehouse:latest
+    environment:
+      BOM_DB_PATH: /data/bom.db
+      BOM_INSTANCE: web-a
+      BOM_DEMO_MODE: "1"
+      BOM_SEED_DEMO: "0"
+    volumes:
+      - bom-data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+    restart: unless-stopped
+
+  web-b:
+    build: .
+    image: bom-warehouse:latest
+    environment:
+      BOM_DB_PATH: /data/bom.db
+      BOM_INSTANCE: web-b
+      BOM_DEMO_MODE: "1"
+      BOM_SEED_DEMO: "0"
+    volumes:
+      - bom-data:/data
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+    depends_on:
+      web-a:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot job: loads the shared-sub-assembly sample and promotes leaf L-4
+  # into an assembly through the public HTTP API. Runs once per `up`.
+  seed:
+    build: .
+    image: bom-warehouse:latest
+    environment:
+      BOM_DB_PATH: /data/bom.db
+      BOM_URL: http://web-a:8000
+      BOM_DEMO_MODE: "1"
+    volumes:
+      - bom-data:/data
+    command: ["python", "scripts/seed_demo.py"]
+    depends_on:
+      web-a:
+        condition: service_healthy
+    restart: "no"
+
+  # Optional end-to-end interleaving proof between the two live containers:
+  #   docker compose --profile demo run --rm interleave
+  interleave:
+    build: .
+    image: bom-warehouse:latest
+    profiles: ["demo"]
+    environment:
+      BOM_URL_A: http://web-a:8000
+      BOM_URL_B: http://web-b:8000
+    command: ["python", "scripts/interleave_http.py"]
+    depends_on:
+      web-a:
+        condition: service_healthy
+      web-b:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  bom-data:

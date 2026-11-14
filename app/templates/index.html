@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOM 叶件用量数仓</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div>
+    <h1>BOM 叶件用量数仓</h1>
+    <p class="sub">多级展开 · 沿路径乘用量 · 多路径相加 · 结果落库</p>
+  </div>
+  <div class="badges">
+    <span class="badge">进程 <b id="badge-instance">{{ instance }}</b></span>
+    <span class="badge">版本 <b id="badge-version">-</b></span>
+    <span class="badge" id="badge-status">就绪</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>父子关系</h2>
+      <div class="hint">
+        单条「新增/改用量」或「删除」先进入下方批改清单，点「提交整批」才落库。
+        上限 <b id="limit-parts">100</b> 个料号 / <b id="limit-edges">200</b> 条关系。
+      </div>
+    </div>
+    <div class="form-row">
+      <label>父件 <input id="f-parent" placeholder="如 FG-1" autocomplete="off"></label>
+      <label>子件 <input id="f-child" placeholder="如 SA-1" autocomplete="off"></label>
+      <label>用量 <input id="f-qty" type="number" min="1" step="1" value="1"></label>
+      <button class="primary" id="btn-stage-upsert">加入批改：新增/改用量</button>
+      <button class="danger" id="btn-stage-delete">加入批改：删除</button>
+      <button class="ghost" id="btn-clear-batch">清空批改</button>
+    </div>
+    <div class="form-row">
+      <button class="primary" id="btn-commit">提交整批</button>
+      <span class="hint" id="batch-count">批改清单 0 条</span>
+      <label class="inline">演示：在整批计算时暂停
+        <input id="demo-pause" type="number" min="0" max="15" step="0.5" value="0" disabled>
+        <span class="hint" id="demo-pause-note">仅演示模式可用</span>
+      </label>
+      <button class="ghost" id="btn-seed-demo">载入演示结构</button>
+    </div>
+    <div class="form-row demo-only hidden">
+      <span class="hint">交错样例（两个进程共库时，请同时打开 8000/8001）：</span>
+      <button class="ghost" id="btn-promote">叶件转装配件（L-4 → L-6/L-7）</button>
+      <button class="ghost" id="btn-interleave-a">写 A 侧：FG-9 → NEW-1</button>
+      <button class="ghost" id="btn-interleave-b">写 B 侧：NEW-1 → FG-9</button>
+      <span class="hint" id="demo-result"></span>
+    </div>
+    <div id="alert" class="alert hidden"></div>
+    <div id="cycle" class="cycle hidden"></div>
+    <div class="batch-wrap">
+      <h3>待提交批改 <span id="batch-empty" class="hint">（空）</span></h3>
+      <table class="batch-table">
+        <thead><tr><th>#</th><th>操作</th><th>父件</th><th>子件</th><th>用量</th><th></th></tr></thead>
+        <tbody id="batch-body"></tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>父件</th><th>子件</th><th>用量</th><th>操作</th></tr></thead>
+        <tbody id="edges-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>叶件用量（已落库）<span class="hint" id="usage-version"></span></h2>
+      <div class="hint">读取自发布版本快照，不触发临时展开。</div>
+    </div>
+    <div class="form-row">
+      <label>只看顶层件 <input id="q-top" placeholder="全部" autocomplete="off"></label>
+      <label>只看叶件 <input id="q-leaf" placeholder="全部" autocomplete="off"></label>
+      <button class="primary" id="btn-refresh">刷新</button>
+      <a class="button ghost" id="btn-download" href="/api/leaf-usage.csv">下载展开 CSV</a>
+      <button class="ghost" id="btn-refresh-summary">汇总</button>
+    </div>
+    <div class="summary" id="summary"></div>
+    <div class="table-wrap tall">
+      <table>
+        <thead><tr><th>顶层件</th><th>叶件</th><th>总用量</th></tr></thead>
+        <tbody id="usage-body"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>共享子装配、叶件转装配件等样例已内置；重启后结果仍在库中。</span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
