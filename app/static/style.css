@@ -163,3 +163,50 @@ td button { padding: 3px 9px; font-size: 12px; }
 .summary .chip b { color: var(--text); }
 
 footer { padding: 0 28px 22px; color: var(--muted); font-size: 12px; }
+
+/* -- usage trace page ---------------------------------------------------- */
+a.badge, .badge-link { text-decoration: none; }
+a.badge:hover { border-color: var(--accent); color: var(--text); }
+
+.trace-main { grid-template-columns: minmax(380px, 1fr) minmax(480px, 1.4fr); }
+
+.suggest { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip-button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip-button:hover { border-color: var(--accent); color: var(--text); }
+.chip-button b { color: var(--text); }
+
+.path-cell { white-space: nowrap; }
+.steps-cell { color: var(--muted); font-size: 12px; }
+.trace-table td { vertical-align: top; }
+
+.totals {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.total-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 3px 0;
+  color: var(--muted);
+}
+.total-row b { color: var(--text); font-variant-numeric: tabular-nums; }
+.total-row.exact { border-top: 1px dashed var(--border); margin-top: 5px; padding-top: 7px; color: var(--text); }
+.total-row.exact b { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.totals .hint { margin: 7px 0 0; }
+
+.summary .chip.ok-chip { border-color: #1c5a33; color: #9be7b5; }
+.summary .chip.err-chip { border-color: #6b2a26; color: #ffc1bd; }

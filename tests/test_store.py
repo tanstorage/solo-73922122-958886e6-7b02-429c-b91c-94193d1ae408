@@ -454,3 +454,203 @@ def test_reads_never_see_mixed_versions(tmp_path):
         stop.set()
         thread.join()
     assert len(seen) >= 1
+
+
+# -- usage trace (contribution paths) -------------------------------------
+
+
+def _trace(store, top, leaf, limit=10):
+    return store.trace_usage(top, leaf, limit)
+
+
+def test_trace_lists_products_and_remainder_exactly(store):
+    # FG -> SA(2) -> L(5) = 10 ; FG -> L(3) = 3 ; FG -> ALT(1) -> L(4) = 4
+    store.commit_batch(
+        _ops(
+            [
+                Edge("FG", "SA", 2),
+                Edge("SA", "L", 5),
+                Edge("FG", "L", 3),
+                Edge("FG", "ALT", 1),
+                Edge("ALT", "L", 4),
+            ]
+        )
+    )
+    result = _trace(store, "FG", "L", limit=2)
+    assert result["stored_qty"] == 17
+    assert result["recomputed_qty"] == 17
+    assert result["consistent"] is True
+    assert [(p["path"], p["qty"]) for p in result["paths"]] == [
+        (["FG", "SA", "L"], 10),
+        (["FG", "ALT", "L"], 4),
+    ]
+    assert result["shown_qty"] == 14
+    assert result["other_qty"] == 3
+    assert result["shown_qty"] + result["other_qty"] == result["stored_qty"]
+    # Every step carries the parent/child edge quantity used in the product.
+    assert result["paths"][0]["steps"] == [
+        {"parent": "FG", "child": "SA", "qty": 2},
+        {"parent": "SA", "child": "L", "qty": 5},
+    ]
+
+
+def test_trace_limit_one_and_full_listing_has_no_remainder(store):
+    store.commit_batch(_ops([Edge("FG", "SA", 2), Edge("SA", "L", 5), Edge("FG", "L", 3)]))
+    top1 = _trace(store, "FG", "L", limit=1)
+    assert [p["qty"] for p in top1["paths"]] == [10]
+    assert top1["other_qty"] == 3
+    all_paths = _trace(store, "FG", "L", limit=10)
+    assert [p["qty"] for p in all_paths["paths"]] == [10, 3]
+    assert all_paths["other_qty"] == 0
+    assert all_paths["shown_qty"] == all_paths["stored_qty"]
+
+
+def test_trace_ties_break_on_complete_part_path(store):
+    # Three equal contributions 2*3 = 6; sorted by full part path, not edge.
+    store.commit_batch(
+        _ops(
+            [
+                Edge("FG", "B-ASSY", 2),
+                Edge("B-ASSY", "L", 3),
+                Edge("FG", "A-ASSY", 2),
+                Edge("A-ASSY", "L", 3),
+                Edge("FG", "L", 6),
+            ]
+        )
+    )
+    result = _trace(store, "FG", "L", limit=10)
+    assert [p["path"] for p in result["paths"]] == [
+        ["FG", "A-ASSY", "L"],
+        ["FG", "B-ASSY", "L"],
+        ["FG", "L"],
+    ]
+    assert all(p["qty"] == 6 for p in result["paths"])
+
+
+def test_trace_does_not_enumerate_exponential_shared_paths(store):
+    # 60 levels of a 2-wide shared DAG: 2^59 paths, all quantity 1.  Pure
+    # algorithm, so the 200-edge commit cap does not apply.
+    from app.store import trace_top_paths as tracer
+
+    edges = []
+    for level in range(60):
+        edges.append(Edge(f"P{level}", f"P{level + 1}", 1))
+        edges.append(Edge(f"P{level}", f"Q{level + 1}", 1))
+        edges.append(Edge(f"Q{level}", f"P{level + 1}", 1))
+        edges.append(Edge(f"Q{level}", f"Q{level + 1}", 1))
+    started = time.monotonic()
+    paths, total = tracer(edges, "P0", "Q60", 5)
+    assert time.monotonic() - started < 2.0
+    assert total == 2 ** 59
+    assert len(paths) == 5
+    assert all(p.qty == 1 for p in paths)
+    # Ties (all equal) are ordered by the complete part-number path.
+    assert [p.path for p in paths] == sorted(p.path for p in paths)
+
+
+def test_trace_top_k_suffix_pruning_is_exact():
+    """Compared against brute-force enumeration on random small DAGs."""
+    import itertools
+    import random
+
+    from app.store import trace_top_paths as tracer
+
+    rng = random.Random(20261114)
+    for _ in range(40):
+        parts = [f"N{i:02d}" for i in range(9)]
+        edges = []
+        for a, b in itertools.combinations(range(len(parts)), 2):
+            if rng.random() < 0.35:
+                edges.append(Edge(parts[a], parts[b], rng.randint(1, 4)))
+        if not edges:
+            continue
+        top, leaf = parts[0], parts[-1]
+        children: dict[str, list[tuple[str, int]]] = {}
+        for edge in edges:
+            children.setdefault(edge.parent, []).append((edge.child, edge.qty))
+
+        def all_paths(node: str) -> list[tuple[tuple[str, ...], int]]:
+            if node == leaf:
+                return [((leaf,), 1)]
+            found = []
+            for child, qty in children.get(node, []):
+                for path, product in all_paths(child):
+                    found.append(((node,) + path, qty * product))
+            return found
+
+        everything = all_paths(top)
+        total = sum(product for _, product in everything)
+        for limit in (1, 2, 3, 10):
+            paths, got_total = tracer(edges, top, leaf, limit)
+            expected = sorted(everything, key=lambda item: (-item[1], item[0]))[:limit]
+            assert got_total == total
+            assert [(p.path, p.qty) for p in paths] == expected
+            assert sum(p.qty for p in paths) <= total
+
+
+def test_trace_unknown_row_and_bad_limit(store):
+    from app.store import NotFoundError, ValidationError
+
+    store.commit_batch(_ops([Edge("FG", "L", 1)]))
+    with pytest.raises(NotFoundError):
+        _trace(store, "FG", "NOPE")
+    with pytest.raises(ValidationError):
+        _trace(store, "FG", "L", limit=0)
+    with pytest.raises(ValidationError):
+        _trace(store, "FG", "L", limit=11)
+
+
+def test_trace_uses_stored_version_and_flags_inconsistency(store):
+    """A tampered stored row is reported, never folded into ``other`` rows."""
+    store.commit_batch(_ops([Edge("FG", "SA", 2), Edge("SA", "L", 5), Edge("FG", "L", 3)]))
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    try:
+        conn.execute("UPDATE leaf_usage SET qty = 99 WHERE top_part = 'FG' AND leaf_part = 'L'")
+        conn.commit()
+    finally:
+        conn.close()
+    result = _trace(store, "FG", "L", limit=1)
+    assert result["recomputed_qty"] == 13
+    assert result["stored_qty"] == 99
+    assert result["consistent"] is False
+    assert result["shown_qty"] == 10
+    assert result["other_qty"] == 3  # the real remaining path, not 99 - 10
+    assert result["other_paths"] is True
+
+
+def test_trace_is_single_version_under_concurrent_commits(tmp_path):
+    """While another process rewrites the BOM, each trace is self-consistent."""
+    store = BomStore(str(tmp_path / "trace.db"))
+    store.commit_batch(_ops([Edge("A", "B", 1), Edge("B", "C", 1)]))
+    stop = threading.Event()
+
+    def writer():
+        qty = 2
+        while not stop.is_set():
+            try:
+                store.commit_batch(
+                    [
+                        BatchOp("upsert", upserts=(Edge("A", "B", qty),)),
+                        BatchOp("upsert", upserts=(Edge("B", "C", qty),)),
+                    ]
+                )
+                qty += 1
+            except Exception:  # pragma: no cover - contention only
+                pass
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        for _ in range(50):
+            result = store.trace_usage("A", "C", limit=10)
+            assert result["consistent"], result
+            assert result["paths"][0]["qty"] == result["stored_qty"]
+            assert result["shown_qty"] == result["stored_qty"]
+            assert result["other_qty"] == 0
+            assert result["paths"][0]["path"] == ["A", "B", "C"]
+            time.sleep(0.002)
+    finally:
+        stop.set()
+        thread.join()

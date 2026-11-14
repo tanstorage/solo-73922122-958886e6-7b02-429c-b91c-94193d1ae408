@@ -149,7 +149,8 @@
       tr.innerHTML =
         `<td class="mono">${esc(row.top_part)}</td>` +
         `<td class="mono">${esc(row.leaf_part)}</td>` +
-        `<td class="num">${esc(row.qty)}</td>`;
+        `<td class="num">${esc(row.qty)}</td>` +
+        `<td><a class="button ghost" href="/trace?top=${encodeURIComponent(row.top_part)}&leaf=${encodeURIComponent(row.leaf_part)}&limit=10">溯源</a></td>`;
       body.appendChild(tr);
     });
     $("summary").innerHTML =

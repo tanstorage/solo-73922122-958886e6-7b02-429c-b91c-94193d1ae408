@@ -352,6 +352,88 @@ def _edge_signature(edges: Iterable[Edge]) -> tuple[tuple[str, str, int], ...]:
     return tuple((e.parent, e.child, e.qty) for e in edges)
 
 
+@dataclass(frozen=True)
+class TracedPath:
+    """One BOM path and its exact contribution (product of edge quantities)."""
+
+    path: tuple[str, ...]
+    qty: int
+    steps: tuple[tuple[str, str, int], ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "path": list(self.path),
+            "qty": self.qty,
+            "steps": [
+                {"parent": parent, "child": child, "qty": qty}
+                for parent, child, qty in self.steps
+            ],
+        }
+
+
+def trace_top_paths(
+    edges: Sequence[Edge], top: str, leaf: str, limit: int
+) -> tuple[list[TracedPath], int]:
+    """Return the ``limit`` largest paths from ``top`` to ``leaf`` and the total.
+
+    Only the best ``limit`` paths per node are kept, so the work is polynomial
+    in the graph size (``O(V * out_degree * limit)``) and never enumerates the
+    potentially exponential number of simple paths.  A suffix of a top-``k``
+    path must itself be a top-``k`` suffix: scaling every suffix of a child by
+    the same positive edge quantity preserves their order, so paths whose
+    suffix is outside the child's top ``k`` can never enter the parent's top
+    ``k``.
+
+    Ties are broken by the complete part-number path (ascending).  The total
+    is accumulated with exact Python integers, so
+    ``sum(path.qty) + other_contributions == total`` holds exactly.
+    """
+    if limit < 1:
+        raise ValidationError("limit 必须在 1..10 之间")
+    children: dict[str, list[tuple[str, int]]] = {}
+    for edge in edges:
+        children.setdefault(edge.parent, []).append((edge.child, edge.qty))
+    for kids in children.values():
+        kids.sort()
+
+    memo: dict[str, tuple[list[TracedPath], int]] = {}
+    visiting: list[str] = []
+
+    def walk(part: str) -> tuple[list[TracedPath], int]:
+        # A path ends at the requested leaf, even if that part happens to have
+        # children: its contribution is the product of quantities up to it.
+        if part == leaf:
+            return [TracedPath((leaf,), 1, ())], 1
+        cached = memo.get(part)
+        if cached is not None:
+            return cached
+        if part in visiting:
+            start = visiting.index(part)
+            raise CyclicStructureError([visiting[start:] + [part]])
+        visiting.append(part)
+        candidates: list[TracedPath] = []
+        total = 0
+        for child, edge_qty in children.get(part, []):
+            child_paths, child_total = walk(child)
+            total += edge_qty * child_total
+            for item in child_paths:
+                candidates.append(
+                    TracedPath(
+                        (part,) + item.path,
+                        edge_qty * item.qty,
+                        ((part, child, edge_qty),) + item.steps,
+                    )
+                )
+        visiting.pop()
+        candidates.sort(key=lambda item: (-item.qty, item.path))
+        best = candidates[:limit]
+        memo[part] = (best, total)
+        return best, total
+
+    paths, total = walk(top)
+    return paths, total
+
+
 # --------------------------------------------------------------------------
 # Store
 # --------------------------------------------------------------------------
@@ -636,6 +718,56 @@ class BomStore:
             sql.append("ORDER BY top_part, leaf_part")
             rows = conn.execute(" ".join(sql), params).fetchall()
             return dict(head), [dict(row) for row in rows]
+
+    def trace_usage(
+        self, top: str, leaf: str, limit: int = 10
+    ) -> dict[str, Any]:
+        """Trace the largest ``limit`` BOM paths of one *stored* usage row.
+
+        Edges and the stored row are read inside a single read transaction, so
+        the traced paths and the compared total both belong to the same
+        published version.  Path enumeration never happens: only the best
+        ``limit`` suffixes per node are carried (see ``trace_top_paths``).
+
+        ``other_qty`` is always derived from the recomputed relations, never
+        from ``stored_qty - shown_qty``.  If recomputation disagrees with the
+        stored row the payload says so (``consistent: false``) and the
+        difference is *not* attributed to unnamed paths.
+        """
+        top = _normalise_token(top, "top")
+        leaf = _normalise_token(leaf, "leaf")
+        if not 1 <= limit <= 10:
+            raise ValidationError("路径条数必须在 1..10 之间")
+        with self.reader() as conn:
+            head = self._head(conn)
+            version_seq = int(head["version_seq"])
+            row = conn.execute(
+                "SELECT qty FROM leaf_usage WHERE version_seq = ? AND top_part = ? AND leaf_part = ?",
+                (version_seq, top, leaf),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"版本 v{version_seq} 中没有落库用量行 {top} → {leaf}")
+            stored_qty = int(row["qty"])
+            edges = self._load_edges(conn, version_seq)
+
+        paths, recomputed_qty = trace_top_paths(edges, top, leaf, limit)
+        shown_qty = sum(item.qty for item in paths)
+        other_qty = recomputed_qty - shown_qty
+        consistent = recomputed_qty == stored_qty
+        return {
+            "version_seq": version_seq,
+            "published_at": head["updated_at"],
+            "top_part": top,
+            "leaf_part": leaf,
+            "limit": limit,
+            "stored_qty": stored_qty,
+            "recomputed_qty": recomputed_qty,
+            "consistent": consistent,
+            "paths": [item.as_dict() for item in paths],
+            "shown_qty": shown_qty,
+            "other_qty": other_qty,
+            "other_paths": other_qty != 0,
+        }
 
     def usage_csv(self, top: str | None = None, leaf: str | None = None) -> tuple[str, int]:
         head, rows = self.usage_rows(top=top, leaf=leaf)

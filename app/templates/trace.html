@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>用量溯源 · BOM 叶件用量数仓</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div>
+    <h1>用量溯源</h1>
+    <p class="sub">选定已发布用量行，按同一版本的父子关系列出贡献最大的路径</p>
+  </div>
+  <div class="badges">
+    <span class="badge">进程 <b id="trace-instance">{{ instance }}</b></span>
+    <span class="badge">版本 <b id="trace-version">-</b></span>
+    <span class="badge" id="trace-status">就绪</span>
+    <a class="badge" href="/">返回维护页</a>
+  </div>
+</header>
+
+<main class="trace-main">
+  <section class="panel">
+    <div class="panel-head">
+      <h2>查询用量行</h2>
+      <div class="hint">
+        只读已落库的发布版本；展开路径按子装配记忆化，共享子装配不会枚举报所有路径。
+      </div>
+    </div>
+    <div class="form-row">
+      <label>装配件 / 顶层件
+        <input id="t-top" list="t-top-list" placeholder="如 FG-1" autocomplete="off">
+        <datalist id="t-top-list"></datalist>
+      </label>
+      <label>叶件
+        <input id="t-leaf" list="t-leaf-list" placeholder="如 L-3" autocomplete="off">
+        <datalist id="t-leaf-list"></datalist>
+      </label>
+      <label>路径条数 <input id="t-limit" type="number" min="1" max="10" step="1" value="10"></label>
+      <button class="primary" id="btn-trace">溯源</button>
+      <button class="ghost" id="btn-trace-clear">清空</button>
+    </div>
+    <div class="form-row">
+      <span class="hint">可选用量行（点击填入）：</span>
+      <span id="t-suggest" class="suggest"></span>
+    </div>
+    <div id="trace-alert" class="alert hidden"></div>
+  </section>
+
+  <section class="panel" id="trace-result-panel">
+    <div class="panel-head">
+      <h2>贡献路径 <span class="hint" id="trace-row-label"></span></h2>
+      <div class="hint" id="trace-version-note">尚未查询</div>
+    </div>
+
+    <div id="trace-inconsistent" class="alert err hidden">
+      <b>数据不一致：</b>按所读版本父子关系复算的用量与落库值不同，路径合计只依据复算值，
+      差额不归入任何其他路径。请核对数据同步。
+    </div>
+
+    <div class="summary" id="trace-summary"></div>
+
+    <div class="table-wrap tall">
+      <table class="trace-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>路径（父件 → 子件 …）</th>
+            <th>沿途用量</th>
+            <th>路径用量</th>
+          </tr>
+        </thead>
+        <tbody id="trace-body"></tbody>
+      </table>
+    </div>
+
+    <div id="trace-totals" class="totals hidden">
+      <div class="total-row"><span>落库用量</span><b id="t-stored">-</b></div>
+      <div class="total-row"><span>复算用量（同一版本）</span><b id="t-recomputed">-</b></div>
+      <div class="total-row"><span id="t-shown-label">已列出路径合计</span><b id="t-shown">-</b></div>
+      <div class="total-row"><span id="t-other-label">其余路径贡献合计</span><b id="t-other">-</b></div>
+      <div class="total-row exact"><span>精确相加</span><b id="t-exact">-</b></div>
+      <p class="hint" id="t-exact-note"></p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>“其余路径贡献合计”由同一版本的复算总量减去已列路径合计得出，不枚举全部路径。</span>
+</footer>
+
+<script src="/static/trace.js"></script>
+</body>
+</html>

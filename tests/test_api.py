@@ -344,3 +344,144 @@ def test_demo_seed_and_leaf_promotion(tmp_path):
         assert usage[("FG-1", "L-6")] == 12  # 2 * 2 * 3
         assert usage[("FG-1", "L-7")] == 4
         assert usage[("L-4", "L-6")] == 3
+
+
+def test_usage_trace_endpoint(client):
+    client.post(
+        "/api/batch",
+        json={
+            "ops": _upsert_ops(
+                ("FG", "SA", 2),
+                ("SA", "L", 5),
+                ("FG", "L", 3),
+                ("FG", "ALT", 1),
+                ("ALT", "L", 4),
+            )
+        },
+    )
+    response = client.get(
+        "/api/usage-trace", params={"top": "fg", "leaf": "l", "limit": 2}
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["top_part"] == "FG" and payload["leaf_part"] == "L"
+    assert payload["version_seq"] == client.get("/api/state").json()["version"]["seq"]
+    assert payload["stored_qty"] == 17
+    assert payload["recomputed_qty"] == 17
+    assert payload["consistent"] is True
+    assert [p["path"] for p in payload["paths"]] == [
+        ["FG", "SA", "L"],
+        ["FG", "ALT", "L"],
+    ]
+    assert [p["qty"] for p in payload["paths"]] == [10, 4]
+    assert payload["other_qty"] == 3
+    assert payload["shown_qty"] + payload["other_qty"] == payload["stored_qty"]
+    assert payload["published_at"]
+
+
+@pytest.mark.parametrize("limit", [0, 11, -1])
+def test_usage_trace_limit_is_validated(client, limit):
+    client.post("/api/batch", json={"ops": _upsert_ops(("FG", "L", 3))})
+    response = client.get(
+        "/api/usage-trace", params={"top": "FG", "leaf": "L", "limit": limit}
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "ValidationError"
+
+
+def test_usage_trace_unknown_or_unpublished_row_is_404(client):
+    client.post("/api/batch", json={"ops": _upsert_ops(("FG", "SA", 2), ("SA", "L", 5))})
+    missing = client.get("/api/usage-trace", params={"top": "FG", "leaf": "NOPE"})
+    assert missing.status_code == 404
+    # SA itself has a stored row; FG is a top part but not a leaf here.
+    assert client.get(
+        "/api/usage-trace", params={"top": "SA", "leaf": "L"}
+    ).status_code == 200
+    assert client.get(
+        "/api/usage-trace", params={"top": "FG", "leaf": "SA"}
+    ).status_code == 404
+
+
+def test_usage_trace_requires_parameters(client):
+    assert client.get("/api/usage-trace", params={"top": "FG"}).status_code == 422
+    assert client.get("/api/usage-trace", params={"leaf": "L"}).status_code == 422
+
+
+def test_usage_trace_reads_one_version_while_other_process_commits(tmp_path):
+    """A different web process rewrites the BOM; B only shows its read version."""
+    with _client(tmp_path, "alpha") as alpha, _client(tmp_path, "beta") as beta:
+        beta.post("/api/batch", json={"ops": _upsert_ops(("A", "B", 1), ("B", "C", 1))})
+        versions = set()
+        for qty in range(2, 12):
+            alpha.post(
+                "/api/batch", json={"ops": _upsert_ops(("A", "B", qty), ("B", "C", qty))}
+            )
+            payload = beta.get(
+                "/api/usage-trace", params={"top": "A", "leaf": "C", "limit": 3}
+            ).json()
+            versions.add(payload["version_seq"])
+            # Every number comes from the same committed structure: stored row,
+            # path product, and total are all q*q from one version.
+            assert payload["consistent"] is True, payload
+            assert payload["stored_qty"] == payload["paths"][0]["qty"]
+            assert payload["paths"][0]["path"] == ["A", "B", "C"]
+            assert payload["shown_qty"] == payload["stored_qty"]
+            assert payload["other_qty"] == 0
+            q = int(payload["stored_qty"] ** 0.5)
+            assert payload["stored_qty"] == q * q
+        assert len(versions) >= 2
+
+
+def test_trace_page_and_script_reference_each_other(tmp_path):
+    with _client(tmp_path, "alpha") as client:
+        page = client.get("/trace")
+        assert page.status_code == 200
+        assert "用量溯源" in page.text
+        assert client.get("/static/trace.js").status_code == 200
+        assert client.get("/static/style.css").status_code == 200
+
+
+def test_usage_trace_single_snapshot_while_writer_hammers(tmp_path):
+    """One process commits continuously; another's traces stay one version."""
+    with _client(tmp_path, "alpha") as alpha, _client(tmp_path, "beta") as beta:
+        beta.post("/api/batch", json={"ops": _upsert_ops(("A", "B", 1), ("B", "C", 1))})
+        stop = threading.Event()
+        failures = []
+        versions = set()
+
+        def writer():
+            qty = 2
+            while not stop.is_set():
+                response = beta.post(
+                    "/api/batch", json={"ops": _upsert_ops(("A", "B", qty), ("B", "C", qty))}
+                )
+                if response.status_code == 200:
+                    qty += 1
+                else:
+                    failures.append(response.text)
+                time.sleep(0.005)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            for _ in range(25):
+                response = alpha.get(
+                    "/api/usage-trace", params={"top": "A", "leaf": "C", "limit": 3}
+                )
+                assert response.status_code == 200, response.text
+                payload = response.json()
+                versions.add(payload["version_seq"])
+                assert payload["consistent"] is True, payload
+                assert [p["path"] for p in payload["paths"]] == [["A", "B", "C"]]
+                qty = payload["stored_qty"]
+                root = int(qty ** 0.5)
+                # Both edges share one quantity within one committed version.
+                assert qty == root * root, payload
+                assert payload["paths"][0]["qty"] == qty
+                assert payload["shown_qty"] == qty
+                assert payload["other_qty"] == 0
+        finally:
+            stop.set()
+            thread.join()
+        assert not failures, failures[:3]
+        assert len(versions) >= 2

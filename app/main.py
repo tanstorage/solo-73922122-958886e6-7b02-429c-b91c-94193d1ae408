@@ -163,6 +163,23 @@ def create_app(
             },
         )
 
+    @app.get("/api/usage-trace")
+    def usage_trace(
+        top: str = Query(..., max_length=64),
+        leaf: str = Query(..., max_length=64),
+        limit: int = Query(default=10),
+    ) -> dict[str, Any]:
+        """Contribution paths of one stored usage row from a single version."""
+        payload = active_store.trace_usage(top=top, leaf=leaf, limit=limit)
+        payload["instance"] = active_instance
+        return payload
+
+    @app.get("/trace", response_class=HTMLResponse)
+    def trace_page(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "trace.html", {"instance": active_instance}
+        )
+
     @app.get("/api/usage-summary")
     def usage_summary() -> dict[str, Any]:
         """Read-only aggregate for the dashboard; never triggers an expansion."""
